@@ -1,0 +1,10 @@
+[package]
+name = "rusted_cart"
+version = "0.1.0"
+authors = ["jonah <jonah@petri.us>"]
+edition = "2018"
+
+[dependencies]
+ndarray = "0.12.1"
+csv = "1"
+serde = { version = "1", features = ["derive"] }
