@@ -1,7 +1,7 @@
 use lazy_static;
 use permutator::Combination;
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::error::Error;
 
 fn mushes() -> Result<Vec<Mush>, Box<Error>> {
@@ -15,54 +15,90 @@ fn mushes() -> Result<Vec<Mush>, Box<Error>> {
     Ok(result)
 }
 
+enum SplitType {
+    Gini,
+    Twoing,
+}
+const SPLIT_TYPE: SplitType = SplitType::Twoing;
+
 fn main() {
     let mush = mushes().expect("error getting mushy");
     println!("got {} rows", mush.len());
 
     // Nodes to check.  Vec of (rows, node_idx)
-    let mut half_nodes: Vec<(_, usize)> = Vec::new();
-    half_nodes.push((mush, 1));
+    let mut half_nodes: VecDeque<(_, usize)> = VecDeque::new();
+    half_nodes.push_back((mush, 1));
 
-    let mut next_page = 2;
+    let mut next_page = 1;
 
-    while let Some((mush, page)) = half_nodes.pop() {
+    while let Some((mush, page)) = half_nodes.pop_front() {
         let mut min_impurinty = None;
+        let mut max_twoing = None;
         for facet in 0..NUM_FACETS {
-            let vals = &facet_vals(&mush, facet);
-            let questions =
-                (1..vals.len())
-                    .flat_map(move |k| vals.combination(k))
-                    .map(move |combis| Question {
-                        facet,
-                        vals: combis.into_iter().cloned().collect(),
-                    });
+            let facet_vals = &facet_vals(&mush, facet);
+            let questions = (1..facet_vals.len())
+                .flat_map(move |k| facet_vals.combination(k))
+                .map(move |combis| Question {
+                    facet,
+                    vals: combis.into_iter().cloned().collect(),
+                });
 
             for question in questions {
                 let answer = question.answer(&mush);
-                let ans_imp = answer.impurity;
-                if let Some((min_i, _, _)) = min_impurinty {
-                    if ans_imp < min_i {
-                        min_impurinty = Some((ans_imp, question, answer));
+
+                match SPLIT_TYPE {
+                    SplitType::Gini => {
+                        let ans_imp = answer.impurity;
+                        if let Some((min_i, _, _)) = min_impurinty {
+                            if ans_imp < min_i {
+                                min_impurinty = Some((ans_imp, question, answer));
+                            }
+                        } else {
+                            min_impurinty = Some((ans_imp, question, answer));
+                        }
                     }
-                } else {
-                    min_impurinty = Some((ans_imp, question, answer));
+                    SplitType::Twoing => {
+                        let p_no = answer.no.rows.len() as f64 / mush.len() as f64;
+                        let p_yes = answer.yes.rows.len() as f64 / mush.len() as f64;
+                        let sum_poison = (answer.yes.poison_cnt as f64
+                            / answer.yes.rows.len() as f64)
+                            - (answer.no.poison_cnt as f64 / answer.no.rows.len() as f64);
+                        let sum_edible = (1.0
+                            - answer.yes.poison_cnt as f64 / answer.yes.rows.len() as f64)
+                            - (1.0 - answer.no.poison_cnt as f64 / answer.no.rows.len() as f64);
+                        let sum = sum_edible.abs() + sum_poison.abs();
+
+                        let twoing = p_no * p_yes * 0.25 * (sum * sum);
+                        if let Some((max_two, _, _)) = max_twoing {
+                            if max_two < twoing {
+                                max_twoing = Some((twoing, question, answer));
+                            }
+                        } else {
+                            max_twoing = Some((twoing, question, answer));
+                        }
+                    }
                 }
             }
         }
-        match min_impurinty {
-            Some((_imp, quest, ans)) => {
-                println!("page {}: {}", page, quest);
-                for (txt, node) in &[("yes", &ans.yes), ("no", &ans.no)] {
-                    if node.impurity == 0.0 {
-                        println!("\tif {}, done. {}", txt, node);
-                    } else {
-                        next_page += 1;
-                        println!("\tif {}, {}, goto page {}", txt, node, next_page);
-                        half_nodes.push((node.rows.clone(), next_page));
-                    }
-                }
+        let (quest, ans) = match SPLIT_TYPE {
+            SplitType::Gini => {
+                let (_, quest, ans) = min_impurinty.expect("huh? no nodes or sumpin?");
+                (quest, ans)
             }
-            None => panic!("huh? no nodes or sumpin?"),
+            SplitType::Twoing => {
+                let (_, quest, ans) = max_twoing.expect("Huh? no nodes?");
+                (quest, ans)
+            }
+        };
+        println!("page {}: {}", page, quest);
+        for (txt, node) in &[("yes", &ans.yes), ("no", &ans.no)] {
+            if node.impurity == 0.0 {
+                println!("\tif {}, done. {}", txt, node);
+            } else {
+                next_page += 1;
+                println!("\tif {}, {}, goto page {}", txt, node, next_page);
+                half_nodes.push_back((node.rows.clone(), next_page));
+            }
         }
     }
 }
@@ -105,7 +141,7 @@ impl std::fmt::Display for Question {
             f,
             "Examine '{}'.  Is it {}{}?",
             facet_name,
-            if self.vals.len() > 1 { "one of" } else { "" },
+            if self.vals.len() > 1 { "one of " } else { "" },
             choices
         )
     }
